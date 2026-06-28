@@ -1,8 +1,9 @@
 # retronet-api
 
-`retronet-api` e' il backend HTTP/WebSocket dell'ecosistema RetroNet. In v0.1
+`retronet-api` e' il backend HTTP/WebSocket dell'ecosistema RetroNet. In v0.2
 orchestra sessioni CP/M-like sopra `retronet-cpm/session` e
-`retronet-terminal`, senza includere ROM, BIOS, BDOS storico o immagini disco.
+`retronet-terminal`, con stato sessione esplicito e percorso interattivo
+`run/input/output`. Non include ROM, BIOS, BDOS storico o immagini disco.
 
 ## Quick Start
 
@@ -29,7 +30,33 @@ Endpoint iniziali:
 - `GET /sessions/{id}`
 - `DELETE /sessions/{id}`
 - `POST /sessions/{id}/command`
+- `POST /sessions/{id}/run`
+- `POST /sessions/{id}/input`
+- `GET /sessions/{id}/output`
 - `GET /sessions/{id}/ws`
+
+## Sessioni Interattive
+
+`command` resta sincrono ed e' comodo per test e automazioni brevi. Per un
+terminale o una futura UI si usa invece il flusso v0.2:
+
+```powershell
+$s = Invoke-RestMethod -Method Post http://127.0.0.1:8080/sessions
+Invoke-RestMethod -Method Post "http://127.0.0.1:8080/sessions/$($s.id)/run" `
+  -ContentType application/json `
+  -Body '{"command":"HELP"}'
+Invoke-RestMethod "http://127.0.0.1:8080/sessions/$($s.id)/output"
+```
+
+Per simulare una tastiera:
+
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:8080/sessions/$($s.id)/input" `
+  -ContentType application/json `
+  -Body '{"data":"DIR\r"}'
+```
+
+Gli stati principali sono `idle`, `running`, `closed` ed `error`.
 
 ## Sicurezza
 
@@ -49,3 +76,4 @@ L'API non accetta path host arbitrari dai client.
 - [WebSocket](docs/websocket.md)
 - [Sicurezza](docs/sicurezza.md)
 - [Release v0.1.0](docs/release-v0.1.0.md)
+- [Release v0.2.0](docs/release-v0.2.0.md)

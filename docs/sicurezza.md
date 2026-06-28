@@ -1,7 +1,7 @@
 # Sicurezza
 
 `retronet-api` e' pensato per demo locali e laboratorio didattico. Anche cosi',
-la v0.1 evita le scorciatoie piu' rischiose.
+la v0.2 evita le scorciatoie piu' rischiose.
 
 ## Drive
 
@@ -14,8 +14,18 @@ la v0.1 evita le scorciatoie piu' rischiose.
 
 - `-max-sessions` limita il numero di sessioni attive.
 - `-session-ttl` limita la durata inattiva.
+- `state=running` impedisce di avviare due comandi contemporanei nella stessa
+  sessione.
+- `POST /sessions/{id}/input` accetta byte per la sessione corrente, ma non
+  espone path, processi host o shell del sistema operativo.
 
-## Fuori Scope v0.1
+## Terminale E Output
+
+Il buffer output di `retronet-terminal` e' condiviso tra `GET /output` e
+WebSocket: leggere da uno dei due canali svuota il buffer. Per evitare sorprese,
+un client interattivo dovrebbe usare un solo consumatore di output per sessione.
+
+## Fuori Scope v0.2
 
 - autenticazione utenti
 - TLS
