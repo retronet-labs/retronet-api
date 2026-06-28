@@ -144,6 +144,54 @@ func TestSessionLimit(t *testing.T) {
 	}
 }
 
+func TestCORSAllowedOrigin(t *testing.T) {
+	app := New(Config{AllowedOrigins: []string{"http://127.0.0.1:18081"}})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodOptions, ts.URL+"/sessions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://127.0.0.1:18081")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:18081" {
+		t.Fatalf("allow-origin=%q", got)
+	}
+}
+
+func TestCORSRejectsUnknownOrigin(t *testing.T) {
+	app := New(Config{AllowedOrigins: []string{"http://127.0.0.1:18081"}})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodOptions, ts.URL+"/sessions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://example.test")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin=%q", got)
+	}
+}
+
 func TestRunConformance(t *testing.T) {
 	if err := RunConformance(t.Context(), Config{Version: "test"}); err != nil {
 		t.Fatal(err)

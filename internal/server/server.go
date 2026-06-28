@@ -12,11 +12,12 @@ import (
 )
 
 type Config struct {
-	Version     string
-	MaxSessions int
-	SessionTTL  time.Duration
-	MaxFileSize int64
-	MaxFiles    int
+	Version        string
+	MaxSessions    int
+	SessionTTL     time.Duration
+	MaxFileSize    int64
+	MaxFiles       int
+	AllowedOrigins []string
 }
 
 type Server struct {
@@ -56,7 +57,39 @@ func normalizeConfig(config Config) Config {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return s.withCORS(s.mux)
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		allowed := origin != "" && s.originAllowed(origin)
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			if origin != "" && !allowed {
+				writeError(w, http.StatusForbidden, fmt.Errorf("origine CORS non autorizzata: %s", origin))
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) originAllowed(origin string) bool {
+	for _, allowed := range s.config.AllowedOrigins {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "*" || allowed == origin {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) routes() {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/retronet-labs/retronet-api/internal/server"
@@ -26,17 +27,19 @@ func run(args []string, stdout *os.File, stderr *os.File) int {
 	ttl := fs.Duration("session-ttl", 30*time.Minute, "durata massima inattiva di una sessione")
 	maxFileSize := fs.Int64("max-file-size", 64*1024, "dimensione massima file nel drive sessione")
 	maxFiles := fs.Int("max-files", 64, "numero massimo file nel drive sessione")
+	corsOrigins := fs.String("cors-origin", "http://127.0.0.1:18081,http://localhost:18081", "origini CORS abilitate, separate da virgola; vuoto disabilita CORS")
 	conformance := fs.Bool("conformance", false, "esegue un controllo sintetico locale e termina")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	cfg := server.Config{
-		Version:     version,
-		MaxSessions: *maxSessions,
-		SessionTTL:  *ttl,
-		MaxFileSize: *maxFileSize,
-		MaxFiles:    *maxFiles,
+		Version:        version,
+		MaxSessions:    *maxSessions,
+		SessionTTL:     *ttl,
+		MaxFileSize:    *maxFileSize,
+		MaxFiles:       *maxFiles,
+		AllowedOrigins: parseOrigins(*corsOrigins),
 	}
 	if *conformance {
 		if err := server.RunConformance(context.Background(), cfg); err != nil {
@@ -59,4 +62,15 @@ func run(args []string, stdout *os.File, stderr *os.File) int {
 		return 1
 	}
 	return 0
+}
+
+func parseOrigins(value string) []string {
+	var origins []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			origins = append(origins, part)
+		}
+	}
+	return origins
 }
