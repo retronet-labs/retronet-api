@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/retronet-labs/retronet-api/internal/ws"
+	"github.com/retronet-labs/retronet-cpm/disk"
 )
 
 type Config struct {
@@ -96,8 +98,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /version", s.handleVersion)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
+	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
+	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListFiles)
+	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleUploadFile)
 	s.mux.HandleFunc("POST /sessions/{id}/command", s.handleCommand)
 	s.mux.HandleFunc("POST /sessions/{id}/run", s.handleRun)
 	s.mux.HandleFunc("POST /sessions/{id}/input", s.handleInput)
@@ -131,6 +136,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sessionResponse(sess))
 }
 
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.manager.List())
+}
+
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.manager.Get(r.PathValue("id"))
 	if err != nil {
@@ -146,6 +155,49 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	files, err := s.manager.ListFiles(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, files)
+}
+
+func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, s.config.MaxFileSize+1024*1024)
+	if err := r.ParseMultipartForm(s.config.MaxFileSize); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: multipart non valido: %v", ErrInvalidUpload, err))
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: campo file mancante", ErrInvalidUpload))
+		return
+	}
+	defer file.Close()
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" && header != nil {
+		name = header.Filename
+	}
+	data, err := io.ReadAll(io.LimitReader(file, s.config.MaxFileSize+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if int64(len(data)) > s.config.MaxFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, disk.ErrFileTooLarge)
+		return
+	}
+	result, err := s.manager.UploadCOM(r.PathValue("id"), name, data)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 type commandRequest struct {
@@ -307,14 +359,14 @@ func (s *Server) pollWebSocket(id string, conn *ws.Conn, done <-chan struct{}) {
 }
 
 func sessionResponse(sess *ManagedSession) map[string]any {
-	state, lastError, closed := sess.status()
+	info := sess.info()
 	return map[string]any{
-		"id":         sess.ID,
-		"created_at": sess.CreatedAt,
-		"expires_at": sess.ExpiresAt,
-		"closed":     closed,
-		"state":      state,
-		"last_error": lastError,
+		"id":         info.ID,
+		"created_at": info.CreatedAt,
+		"expires_at": info.ExpiresAt,
+		"closed":     info.Closed,
+		"state":      info.State,
+		"last_error": info.LastError,
 	}
 }
 
@@ -330,6 +382,14 @@ func statusForError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, ErrEmptyCommand):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrInvalidUpload), errors.Is(err, disk.ErrInvalidName):
+		return http.StatusBadRequest
+	case errors.Is(err, disk.ErrFileTooLarge):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, disk.ErrTooManyFiles):
+		return http.StatusInsufficientStorage
+	case errors.Is(err, disk.ErrReadOnly):
+		return http.StatusForbidden
 	default:
 		return http.StatusInternalServerError
 	}

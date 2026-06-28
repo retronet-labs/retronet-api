@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,6 +77,20 @@ func TestHealthVersionAndCommand(t *testing.T) {
 	if result.State != SessionIdle {
 		t.Fatalf("result state=%q", result.State)
 	}
+
+	resp, err = http.Get(ts.URL + "/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed sessionListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if listed.Count != 1 || len(listed.Sessions) != 1 || listed.Sessions[0].ID != created.ID {
+		t.Fatalf("sessions=%+v", listed)
+	}
 }
 
 func TestAsyncRunInputAndOutput(t *testing.T) {
@@ -144,6 +159,60 @@ func TestSessionLimit(t *testing.T) {
 	}
 }
 
+func TestUploadCOMAndListFiles(t *testing.T) {
+	app := New(Config{MaxFileSize: 16, MaxFiles: 2})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	sessionID := createTestSession(t, ts.URL)
+	resp := uploadTestFile(t, ts.URL, sessionID, "HELLO.COM", []byte{0x76})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status=%d", resp.StatusCode)
+	}
+	var uploaded uploadResult
+	if err := json.NewDecoder(resp.Body).Decode(&uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Name != "HELLO.COM" || uploaded.Size != 1 {
+		t.Fatalf("uploaded=%+v", uploaded)
+	}
+
+	resp, err := http.Get(ts.URL + "/sessions/" + sessionID + "/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list files status=%d", resp.StatusCode)
+	}
+	var files fileListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		t.Fatal(err)
+	}
+	if files.Count != 1 || files.Files[0].Name != "HELLO.COM" || files.Files[0].Size != 1 {
+		t.Fatalf("files=%+v", files)
+	}
+}
+
+func TestUploadRejectsNonCOMAndTooLarge(t *testing.T) {
+	app := New(Config{MaxFileSize: 2})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	sessionID := createTestSession(t, ts.URL)
+	resp := uploadTestFile(t, ts.URL, sessionID, "README.TXT", []byte("x"))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-com status=%d", resp.StatusCode)
+	}
+	resp = uploadTestFile(t, ts.URL, sessionID, "BIG.COM", []byte("abc"))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("large status=%d", resp.StatusCode)
+	}
+}
+
 func TestCORSAllowedOrigin(t *testing.T) {
 	app := New(Config{AllowedOrigins: []string{"http://127.0.0.1:18081"}})
 	ts := httptest.NewServer(app.Handler())
@@ -196,6 +265,32 @@ func TestRunConformance(t *testing.T) {
 	if err := RunConformance(t.Context(), Config{Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func uploadTestFile(t *testing.T, baseURL string, sessionID string, name string, data []byte) *http.Response {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/sessions/"+sessionID+"/files", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 func createTestSession(t *testing.T, baseURL string) string {

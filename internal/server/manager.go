@@ -20,6 +20,7 @@ var (
 	ErrSessionClosed   = errors.New("sessione chiusa")
 	ErrSessionBusy     = errors.New("sessione gia in esecuzione")
 	ErrEmptyCommand    = errors.New("comando vuoto")
+	ErrInvalidUpload   = errors.New("upload non valido")
 )
 
 type SessionState string
@@ -47,9 +48,40 @@ type ManagedSession struct {
 	LastError string
 
 	cpm     *session.Session
+	drive   disk.MutableDrive
 	cleanup func() error
 	line    []byte
 	mu      sync.Mutex
+}
+
+type SessionInfo struct {
+	ID        string       `json:"id"`
+	CreatedAt time.Time    `json:"created_at"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	Closed    bool         `json:"closed"`
+	State     SessionState `json:"state"`
+	LastError string       `json:"last_error,omitempty"`
+}
+
+type sessionListResponse struct {
+	Sessions []SessionInfo `json:"sessions"`
+	Count    int           `json:"count"`
+	Limit    int           `json:"limit"`
+}
+
+type fileListResponse struct {
+	Files []FileInfo `json:"files"`
+	Count int        `json:"count"`
+}
+
+type FileInfo struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type uploadResult struct {
+	Name string `json:"name"`
+	Size int    `json:"size"`
 }
 
 type commandResult struct {
@@ -112,10 +144,26 @@ func (m *Manager) Create() (*ManagedSession, error) {
 		ExpiresAt: now.Add(m.config.SessionTTL),
 		State:     SessionIdle,
 		cpm:       cpmSession,
+		drive:     drive,
 		cleanup:   cleanup,
 	}
 	m.sessions[id] = sess
 	return sess, nil
+}
+
+func (m *Manager) List() sessionListResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupExpiredLocked()
+	sessions := make([]SessionInfo, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		sessions = append(sessions, sess.info())
+	}
+	return sessionListResponse{
+		Sessions: sessions,
+		Count:    len(sessions),
+		Limit:    m.config.MaxSessions,
+	}
 }
 
 func (m *Manager) Get(id string) (*ManagedSession, error) {
@@ -139,6 +187,37 @@ func (m *Manager) Delete(id string) error {
 	delete(m.sessions, id)
 	m.mu.Unlock()
 	return sess.close()
+}
+
+func (m *Manager) ListFiles(id string) (fileListResponse, error) {
+	sess, err := m.Get(id)
+	if err != nil {
+		return fileListResponse{}, err
+	}
+	files, err := sess.drive.List()
+	if err != nil {
+		return fileListResponse{}, err
+	}
+	out := make([]FileInfo, 0, len(files))
+	for _, file := range files {
+		out = append(out, FileInfo{Name: file.Name, Size: file.Size})
+	}
+	return fileListResponse{Files: out, Count: len(out)}, nil
+}
+
+func (m *Manager) UploadCOM(id string, name string, data []byte) (uploadResult, error) {
+	sess, err := m.Get(id)
+	if err != nil {
+		return uploadResult{}, err
+	}
+	normalized, err := normalizeCOMName(name)
+	if err != nil {
+		return uploadResult{}, err
+	}
+	if err := sess.drive.WriteFile(normalized, data); err != nil {
+		return uploadResult{}, err
+	}
+	return uploadResult{Name: normalized, Size: len(data)}, nil
 }
 
 func (m *Manager) RunCommand(id string, command string) (commandResult, error) {
@@ -474,6 +553,18 @@ func (s *ManagedSession) close() error {
 	return nil
 }
 
+func (s *ManagedSession) info() SessionInfo {
+	state, lastError, closed := s.status()
+	return SessionInfo{
+		ID:        s.ID,
+		CreatedAt: s.CreatedAt,
+		ExpiresAt: s.ExpiresAt,
+		Closed:    closed,
+		State:     state,
+		LastError: lastError,
+	}
+}
+
 func (s *ManagedSession) status() (SessionState, string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -535,4 +626,22 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+func normalizeCOMName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("%w: nome file mancante", ErrInvalidUpload)
+	}
+	if !strings.Contains(name, ".") {
+		name += ".COM"
+	}
+	normalized, err := disk.NormalizeName(name)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasSuffix(normalized, ".COM") {
+		return "", fmt.Errorf("%w: sono ammessi solo file .COM", ErrInvalidUpload)
+	}
+	return normalized, nil
 }

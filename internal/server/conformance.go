@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,7 +98,60 @@ func RunConformance(ctx context.Context, config Config) error {
 	if !strings.Contains(output, "DIR") {
 		return fmt.Errorf("output run async inatteso: %q", output)
 	}
+	if err := uploadConformanceCOM(server.URL, created.ID); err != nil {
+		return err
+	}
 	return nil
+}
+
+func uploadConformanceCOM(baseURL string, id string) error {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "TINY.COM")
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write([]byte{0x76}); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/sessions/"+id+"/files", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("upload status=%d", resp.StatusCode)
+	}
+	resp, err = http.Get(baseURL + "/sessions/" + id + "/files")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("list files status=%d", resp.StatusCode)
+	}
+	var listed struct {
+		Files []struct {
+			Name string `json:"name"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		return err
+	}
+	for _, file := range listed.Files {
+		if file.Name == "TINY.COM" {
+			return nil
+		}
+	}
+	return fmt.Errorf("TINY.COM non trovato in lista file")
 }
 
 func expectSessionState(baseURL string, id string, state SessionState) error {
