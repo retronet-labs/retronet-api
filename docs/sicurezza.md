@@ -25,6 +25,21 @@ Il buffer output di `retronet-terminal` e' condiviso tra `GET /output` e
 WebSocket: leggere da uno dei due canali svuota il buffer. Per evitare sorprese,
 un client interattivo dovrebbe usare un solo consumatore di output per sessione.
 
+## Upload .COM
+
+`POST /sessions/{id}/files` carica file `.COM` solo dentro il drive temporaneo
+della sessione. Non accetta path host arbitrari: il nome viene normalizzato come
+CP/M 8.3 e sono rifiutati slash, `..`, sottodirectory e nomi non `.COM`.
+
+Restano attivi i limiti:
+
+- `-max-file-size`
+- `-max-files`
+- cleanup alla chiusura/scadenza sessione
+
+Il repo non include programmi storici. Chi usa l'upload deve caricare solo
+software proprio, sintetico o con licenza compatibile e documentata.
+
 ## CORS
 
 Per supportare `retronet-ui` locale, la CLI abilita CORS solo per
@@ -37,7 +52,6 @@ il default e va usata solo in laboratorio locale consapevole.
 - autenticazione utenti
 - TLS
 - quote multi-tenant robuste
-- upload file
 - isolamento OS/container per sessione
 
 Questi punti diventeranno importanti prima di esporre il servizio fuori da una

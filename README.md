@@ -39,8 +39,11 @@ Endpoint iniziali:
 - `GET /health`
 - `GET /version`
 - `POST /sessions`
+- `GET /sessions`
 - `GET /sessions/{id}`
 - `DELETE /sessions/{id}`
+- `GET /sessions/{id}/files`
+- `POST /sessions/{id}/files`
 - `POST /sessions/{id}/command`
 - `POST /sessions/{id}/run`
 - `POST /sessions/{id}/input`
@@ -70,6 +73,20 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:8080/sessions/$($s.id)/input" `
 
 Gli stati principali sono `idle`, `running`, `closed` ed `error`.
 
+## Upload .COM
+
+Ogni sessione ha un drive temporaneo confinato. Per caricare un programma `.COM`
+nel drive della sessione:
+
+```powershell
+$s = Invoke-RestMethod -Method Post http://127.0.0.1:8080/sessions
+Invoke-RestMethod -Method Post "http://127.0.0.1:8080/sessions/$($s.id)/files" `
+  -Form @{ file = Get-Item .\HELLO.COM }
+```
+
+Sono ammessi solo nomi CP/M 8.3 con estensione `.COM`; valgono i limiti
+`-max-file-size` e `-max-files`.
+
 ## Sicurezza
 
 Ogni sessione CP/M-like usa un drive temporaneo confinato. Di default:
@@ -89,3 +106,5 @@ L'API non accetta path host arbitrari dai client.
 - [Sicurezza](docs/sicurezza.md)
 - [Release v0.1.0](docs/release-v0.1.0.md)
 - [Release v0.2.0](docs/release-v0.2.0.md)
+- [Release v0.3.0](docs/release-v0.3.0.md)
+- [Release v0.4.0](docs/release-v0.4.0.md)

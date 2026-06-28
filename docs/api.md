@@ -69,6 +69,32 @@ Risposta:
 - `closed`: sessione chiusa
 - `error`: ultimo comando terminato con errore recuperabile
 
+## Lista Sessioni
+
+```http
+GET /sessions
+```
+
+Risposta:
+
+```json
+{
+  "sessions": [
+    {
+      "id": "f3...",
+      "created_at": "2026-06-28T12:00:00Z",
+      "expires_at": "2026-06-28T12:30:00Z",
+      "closed": false,
+      "state": "idle"
+    }
+  ],
+  "count": 1,
+  "limit": 32
+}
+```
+
+La dashboard usa questo endpoint per mostrare le sessioni attive in memoria.
+
 ## Stato Sessione
 
 ```http
@@ -82,6 +108,55 @@ DELETE /sessions/{id}
 ```
 
 Chiude la sessione e rimuove la directory temporanea.
+
+## Lista File Della Sessione
+
+```http
+GET /sessions/{id}/files
+```
+
+Risposta:
+
+```json
+{
+  "files": [
+    {"name":"HELLO.COM","size":128}
+  ],
+  "count": 1
+}
+```
+
+I nomi sono normalizzati in formato CP/M 8.3.
+
+## Upload .COM
+
+```http
+POST /sessions/{id}/files
+Content-Type: multipart/form-data
+
+file=<HELLO.COM>
+```
+
+La risposta:
+
+```json
+{
+  "name": "HELLO.COM",
+  "size": 128
+}
+```
+
+Vincoli:
+
+- sono ammessi solo file `.COM`
+- il nome viene normalizzato con le regole 8.3 di `retronet-cpm/disk`
+- path traversal, sottodirectory, `..`, slash e drive host arbitrari sono
+  rifiutati
+- `-max-file-size` limita la dimensione
+- `-max-files` limita il numero di file nel drive temporaneo
+
+Il campo multipart `name` puo' sovrascrivere il nome originale del file, ma
+resta soggetto agli stessi controlli.
 
 ## Esegui Comando
 
