@@ -66,6 +66,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("POST /sessions/{id}/command", s.handleCommand)
+	s.mux.HandleFunc("POST /sessions/{id}/run", s.handleRun)
+	s.mux.HandleFunc("POST /sessions/{id}/input", s.handleInput)
+	s.mux.HandleFunc("GET /sessions/{id}/output", s.handleOutput)
 	s.mux.HandleFunc("GET /sessions/{id}/ws", s.handleWebSocket)
 }
 
@@ -131,6 +134,49 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req commandRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("JSON comando non valido: %w", err))
+		return
+	}
+	result, err := s.manager.StartCommand(r.PathValue("id"), req.Command)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+type inputRequest struct {
+	Data string `json:"data"`
+}
+
+func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req inputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("JSON input non valido: %w", err))
+		return
+	}
+	result, err := s.manager.SendInput(r.PathValue("id"), req.Data)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
+	result, err := s.manager.DrainOutput(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	conn, err := ws.Accept(w, r)
@@ -145,6 +191,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.SendJSON(socketMessage{Type: "error", Error: err.Error()})
 		return
 	}
+	done := make(chan struct{})
+	defer close(done)
+	go s.pollWebSocket(id, conn, done)
 	for {
 		data, err := conn.ReadText()
 		if err != nil {
@@ -168,12 +217,71 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) pollWebSocket(id string, conn *ws.Conn, done <-chan struct{}) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var lastState SessionState
+	var lastError string
+	var lastClosed bool
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			result, err := s.manager.DrainOutput(id)
+			if err != nil {
+				_ = conn.SendJSON(socketMessage{Type: "error", Error: err.Error()})
+				return
+			}
+			stateChanged := result.State != lastState || result.LastError != lastError || result.Closed != lastClosed
+			lastState = result.State
+			lastError = result.LastError
+			lastClosed = result.Closed
+			if result.Output != "" {
+				if err := conn.SendJSON(socketMessage{
+					Type:   "output",
+					Data:   result.Output,
+					State:  result.State,
+					Closed: result.Closed,
+					Error:  result.LastError,
+				}); err != nil {
+					return
+				}
+			}
+			if stateChanged {
+				if err := conn.SendJSON(socketMessage{
+					Type:   "state",
+					State:  result.State,
+					Closed: result.Closed,
+					Error:  result.LastError,
+				}); err != nil {
+					return
+				}
+			}
+			if result.Output != "" || stateChanged {
+				if err := conn.SendJSON(socketMessage{
+					Type:     "snapshot",
+					Snapshot: result.Snapshot,
+					State:    result.State,
+					Closed:   result.Closed,
+					Error:    result.LastError,
+				}); err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
 func sessionResponse(sess *ManagedSession) map[string]any {
+	state, lastError, closed := sess.status()
 	return map[string]any{
 		"id":         sess.ID,
 		"created_at": sess.CreatedAt,
 		"expires_at": sess.ExpiresAt,
-		"closed":     sess.Closed,
+		"closed":     closed,
+		"state":      state,
+		"last_error": lastError,
 	}
 }
 
@@ -185,6 +293,10 @@ func statusForError(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, ErrSessionClosed):
 		return http.StatusGone
+	case errors.Is(err, ErrSessionBusy):
+		return http.StatusConflict
+	case errors.Is(err, ErrEmptyCommand):
+		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
 	}
