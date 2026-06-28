@@ -1,0 +1,10 @@
+github.com/retronet-labs/retronet-8080 v0.1.1 h1:qgJswUmitk19GqCl8DT98VDGfhPwzxN4ToO6VNXhqBM=
+github.com/retronet-labs/retronet-8080 v0.1.1/go.mod h1:nwaUxulldHKgUunfag6JQJO41JXCIKyfqn1J8RNAeXY=
+github.com/retronet-labs/retronet-cpm v0.5.0 h1:hpse3TFOKFoQnCrbrV7yuw9aRcV/Fq7281OCPAz4GIk=
+github.com/retronet-labs/retronet-cpm v0.5.0/go.mod h1:Hn+LGxAPZaRbxE0TXUy1vtRn5mLDRkZu7ZkBS+jhDKQ=
+github.com/retronet-labs/retronet-hardware v0.5.2 h1:FpVADhFBjB35JkjovthoH3tdwQ4IG/E9F/nuAfXvjMg=
+github.com/retronet-labs/retronet-hardware v0.5.2/go.mod h1:klg76vkbOGJTs0JUwvozlangmKEjCTvFgnfyXHlPh8M=
+github.com/retronet-labs/retronet-logic v0.4.0 h1:Ab3WeUBDf+8H4z8JXRqT7m2QdypdDHv/QiCIObApQWA=
+github.com/retronet-labs/retronet-logic v0.4.0/go.mod h1:Nx1pOm7mQR4Sv+k5xEXffBNkzAXB70t8RcmQIHM5UKU=
+github.com/retronet-labs/retronet-terminal v0.3.0 h1:WAXDifAGHEEDV5ksc37DJt51rq2Rn4pOseqmv3PfY38=
+github.com/retronet-labs/retronet-terminal v0.3.0/go.mod h1:d+aYDUonVkwLgs5W95mCL3Tih2go9yGwS6xscg3J8O4=

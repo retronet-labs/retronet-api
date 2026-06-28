@@ -1,0 +1,4 @@
+.gocache/
+*.exe
+tmp/
+coverage.out
