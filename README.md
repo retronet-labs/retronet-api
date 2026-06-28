@@ -13,6 +13,18 @@ go run ./cmd/retronet-api -conformance
 go run ./cmd/retronet-api -addr 127.0.0.1:8080
 ```
 
+Per usare `retronet-ui` locale il server abilita di default CORS solo per:
+
+- `http://127.0.0.1:18081`
+- `http://localhost:18081`
+
+Si puo' cambiare o disabilitare:
+
+```powershell
+go run ./cmd/retronet-api -cors-origin ""
+go run ./cmd/retronet-api -cors-origin "http://127.0.0.1:18081"
+```
+
 Esempio REST:
 
 ```powershell

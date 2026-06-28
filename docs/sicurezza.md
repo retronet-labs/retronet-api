@@ -25,6 +25,13 @@ Il buffer output di `retronet-terminal` e' condiviso tra `GET /output` e
 WebSocket: leggere da uno dei due canali svuota il buffer. Per evitare sorprese,
 un client interattivo dovrebbe usare un solo consumatore di output per sessione.
 
+## CORS
+
+Per supportare `retronet-ui` locale, la CLI abilita CORS solo per
+`http://127.0.0.1:18081` e `http://localhost:18081`. Le origini si cambiano con
+`-cors-origin`; valore vuoto significa CORS disabilitato. La wildcard `*` non e'
+il default e va usata solo in laboratorio locale consapevole.
+
 ## Fuori Scope v0.2
 
 - autenticazione utenti

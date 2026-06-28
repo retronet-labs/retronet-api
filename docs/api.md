@@ -12,6 +12,29 @@ Risposta:
 {"service":"retronet-api","status":"ok"}
 ```
 
+## CORS Locale
+
+La CLI abilita CORS per le origini locali usate da `retronet-ui`:
+
+- `http://127.0.0.1:18081`
+- `http://localhost:18081`
+
+Questo permette alla UI browser di creare sessioni e parlare con l'API da una
+porta diversa. Le origini sono configurabili:
+
+```powershell
+go run ./cmd/retronet-api -cors-origin "http://127.0.0.1:18081"
+```
+
+Per disabilitare CORS:
+
+```powershell
+go run ./cmd/retronet-api -cors-origin ""
+```
+
+Il server non usa wildcard di default. `*` e' supportato solo se impostato
+esplicitamente, ed e' pensato per prove locali controllate.
+
 ## Versione
 
 ```http
