@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +121,26 @@ func TestBareAssembleWithoutArchDirective(t *testing.T) {
 		if status != http.StatusOK {
 			t.Errorf("%s: assemble status=%d body=%v (deve funzionare anche senza .arch esplicito)", arch, status, result)
 		}
+	}
+}
+
+// TestBareAssembleRejectsArchMismatch verifica che una sessione creata per
+// una CPU non accetti un sorgente con una riga ".arch" esplicita per
+// un'altra CPU: caricarlo comunque produrrebbe byte eseguiti dalla CPU
+// sbagliata, senza nessun errore visibile.
+func TestBareAssembleRejectsArchMismatch(t *testing.T) {
+	app := New(Config{Version: "test", SessionTTL: time.Minute})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	sessionID := createBareSession(t, ts.URL, "4004")
+	src := ".arch i8080\nMVI A, 0x48\nOUT 1\nHLT\n"
+	status, result := assembleSource(t, ts.URL, sessionID, src)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400; body=%v", status, result)
+	}
+	if !strings.Contains(fmt.Sprint(result["error"]), "i8080") {
+		t.Errorf("error=%v, want menzioni i8080", result["error"])
 	}
 }
 

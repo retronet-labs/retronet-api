@@ -31,6 +31,7 @@ var (
 	ErrUnknownArch           = errors.New("architettura non supportata per sessioni bare")
 	ErrEmptySource           = errors.New("sorgente vuoto")
 	ErrProgramAlreadyRunning = errors.New("programma gia' in esecuzione")
+	ErrArchMismatch          = errors.New("l'architettura del sorgente non corrisponde a quella della sessione")
 )
 
 type SessionState string
@@ -369,6 +370,13 @@ func (m *Manager) Assemble(id string, src string) (assembleResult, error) {
 	result, err := asmlib.Assemble(src, "i"+sess.Arch)
 	if err != nil {
 		return assembleResult{}, err
+	}
+	// Se il sorgente ha una propria riga ".arch" per un'architettura diversa
+	// da quella della sessione, asmlib l'ha comunque compilato (la direttiva
+	// del sorgente vince sempre sull'hint): caricarlo qui sarebbe byte per
+	// una CPU diversa da quella del backend, eseguito silenziosamente male.
+	if result.ArchName != "i"+sess.Arch {
+		return assembleResult{}, fmt.Errorf("%w: il sorgente specifica .arch %s ma la sessione e' %s", ErrArchMismatch, result.ArchName, sess.Arch)
 	}
 	if err := sess.bare.Load(result.ROM, result.LoadAddress); err != nil {
 		return assembleResult{}, err

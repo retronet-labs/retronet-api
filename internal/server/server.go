@@ -430,7 +430,7 @@ func statusForError(err error) int {
 		return http.StatusGone
 	case errors.Is(err, ErrSessionBusy):
 		return http.StatusConflict
-	case errors.Is(err, ErrEmptyCommand), errors.Is(err, ErrEmptySource), errors.Is(err, ErrArchRequiredForBare), errors.Is(err, ErrUnknownKind), errors.Is(err, ErrUnknownArch):
+	case errors.Is(err, ErrEmptyCommand), errors.Is(err, ErrEmptySource), errors.Is(err, ErrArchRequiredForBare), errors.Is(err, ErrUnknownKind), errors.Is(err, ErrUnknownArch), errors.Is(err, ErrArchMismatch):
 		return http.StatusBadRequest
 	case errors.Is(err, ErrInvalidUpload), errors.Is(err, disk.ErrInvalidName):
 		return http.StatusBadRequest
