@@ -3,10 +3,10 @@ package backend
 import "fmt"
 
 // registry mappa il nome CPU scelto dall'utente (via API) al costruttore del
-// backend corrispondente. "6502" viene aggiunto quando l'adapter i6502 è
-// pronto (vedi i6502.go).
+// backend corrispondente.
 var registry = map[string]func() Backend{
 	"4004": newI4004,
+	"6502": newI6502,
 	"8008": newI8008,
 	"8080": newI8080,
 }

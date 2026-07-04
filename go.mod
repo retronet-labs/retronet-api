@@ -12,6 +12,7 @@ require (
 )
 
 require (
-	github.com/retronet-labs/retronet-hardware v0.5.2 // indirect
+	github.com/retronet-labs/retronet-6502 v0.1.0 // indirect
+	github.com/retronet-labs/retronet-hardware v0.8.0 // indirect
 	github.com/retronet-labs/retronet-logic v0.4.0 // indirect
 )

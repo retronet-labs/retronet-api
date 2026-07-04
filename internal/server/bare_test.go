@@ -177,6 +177,41 @@ func TestBareInputEchoAndHalt(t *testing.T) {
 	}
 }
 
+// TestBare6502InputEchoAndHalt ripete lo stesso scenario di
+// TestBareInputEchoAndHalt sul backend 6502, che usa la convenzione console a
+// indirizzi mappati in memoria (docs/io-console-i6502.md) invece delle porte
+// I/O di 8008/8080.
+func TestBare6502InputEchoAndHalt(t *testing.T) {
+	app := New(Config{Version: "test", SessionTTL: time.Minute})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	sessionID := createBareSession(t, ts.URL, "6502")
+	src := ".arch i6502\n.orgbase $8000\n.equ OUT $F001\n.equ STATUS $F002\n.equ IN $F004\n" +
+		"start:\nloop: LDA STATUS\nAND #$01\nBEQ loop\nLDA IN\nCMP #$2E\nBEQ halt\nSTA OUT\nJMP loop\n" +
+		"halt: JMP halt\n.org $FFFC\n.word start\n"
+	if status, result := assembleSource(t, ts.URL, sessionID, src); status != http.StatusOK {
+		t.Fatalf("assemble status=%d body=%v", status, result)
+	}
+
+	runBare(t, ts.URL, sessionID)
+
+	input := bytes.NewBufferString(`{"data":"AB."}`)
+	resp, err := http.Post(ts.URL+"/sessions/"+sessionID+"/input", "application/json", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("input status=%d", resp.StatusCode)
+	}
+
+	output := pollBareOutput(t, ts.URL, sessionID, "AB")
+	if !strings.Contains(output, "AB") {
+		t.Fatalf("output=%q, want contenere \"AB\"", output)
+	}
+}
+
 // TestBareAssembleErrorReportsLine verifica che un errore di compilazione
 // torni 422 con la riga corretta, invece di rompere la sessione.
 func TestBareAssembleErrorReportsLine(t *testing.T) {
