@@ -34,6 +34,10 @@ func newI4004() Backend {
 	return &i4004Backend{
 		term:    rt.New(rt.Config{ANSI: true}),
 		inputCh: make(chan uint8, 1024),
+		// stopCh e' gia' valido da subito: Stop() puo' arrivare (es. una
+		// DELETE sulla sessione) prima che Run() sia mai stato chiamato, e
+		// close() su un canale nil va in panic.
+		stopCh: make(chan struct{}),
 	}
 }
 

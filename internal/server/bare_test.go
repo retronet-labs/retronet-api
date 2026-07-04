@@ -340,3 +340,63 @@ func TestBareUnknownArchRejected(t *testing.T) {
 		t.Fatalf("status=%d, want 400", resp.StatusCode)
 	}
 }
+
+// TestBareDeleteWithoutRunNeverPanics riproduce un bug reale: chiudere una
+// sessione bare mai eseguita (nessun /assemble o /run) mandava in panic il
+// server intero. close() chiama sempre Backend.Stop(); i backend 4004 e 6502
+// inizializzavano il canale di stop solo dentro Run(), quindi un Stop() prima
+// del primo Run() faceva "close su canale nil". Copre tutte e 4 le CPU e
+// entrambi i punti di chiamata (subito dopo la creazione, e dopo un assemble
+// senza mai eseguire).
+func TestBareDeleteWithoutRunNeverPanics(t *testing.T) {
+	app := New(Config{Version: "test", SessionTTL: time.Minute})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	deleteSession := func(t *testing.T, id string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodDelete, ts.URL+"/sessions/"+id, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	for _, arch := range []string{"4004", "6502", "8008", "8080"} {
+		// caso 1: chiudi subito dopo la creazione, senza assemblare.
+		id := createBareSession(t, ts.URL, arch)
+		resp := deleteSession(t, id)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("%s: delete senza assemble status=%d", arch, resp.StatusCode)
+		}
+
+		// caso 2: assembla ma non eseguire mai, poi chiudi.
+		id = createBareSession(t, ts.URL, arch)
+		src := map[string]string{
+			"4004": "LDM 5\nWMP\nhalt: JUN halt\n",
+			"6502": "start:\nhalt: JMP halt\n.org $FFFC\n.word start\n",
+			"8008": "LAI 0x48\nOUT 8\nHLT\n",
+			"8080": "MVI A, 0x48\nOUT 1\nHLT\n",
+		}[arch]
+		if status, result := assembleSource(t, ts.URL, id, src); status != http.StatusOK {
+			t.Fatalf("%s: assemble status=%d body=%v", arch, status, result)
+		}
+		resp = deleteSession(t, id)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("%s: delete dopo assemble senza run status=%d", arch, resp.StatusCode)
+		}
+	}
+
+	// Se il server e' andato in panic, /health non risponde piu'.
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("server morto dopo le delete: %v", err)
+	}
+	resp.Body.Close()
+}

@@ -73,7 +73,13 @@ type i6502Backend struct {
 }
 
 func newI6502() Backend {
-	return &i6502Backend{term: rt.New(rt.Config{ANSI: true})}
+	return &i6502Backend{
+		term: rt.New(rt.Config{ANSI: true}),
+		// stopCh e' gia' valido da subito: Stop() puo' arrivare (es. una
+		// DELETE sulla sessione) prima che Run() sia mai stato chiamato, e
+		// close() su un canale nil va in panic.
+		stopCh: make(chan struct{}),
+	}
 }
 
 func (b *i6502Backend) Load(rom []byte, loadAddress int) error {
