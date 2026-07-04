@@ -361,7 +361,12 @@ func (m *Manager) Assemble(id string, src string) (assembleResult, error) {
 	}
 	sess.mu.Unlock()
 
-	result, err := asmlib.Assemble(src, sess.Arch)
+	// I nomi arch di retronet-api ("4004", "8080", ...) sono senza prefisso,
+	// gia' quelli che l'utente sceglie da UI/API; asmlib/retronet-asm usa
+	// invece "i4004", "i8080", ... (convenzione storica della CLI). La
+	// conversione serve solo come hint: se il sorgente ha una propria riga
+	// ".arch", quella resta autoritativa e sovrascrive questo valore.
+	result, err := asmlib.Assemble(src, "i"+sess.Arch)
 	if err != nil {
 		return assembleResult{}, err
 	}

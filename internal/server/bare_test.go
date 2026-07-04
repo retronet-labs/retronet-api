@@ -96,6 +96,33 @@ func pollBareOutput(t *testing.T, baseURL string, sessionID string, want string)
 	return all.String()
 }
 
+// TestBareAssembleWithoutArchDirective riproduce il caso reale della UI:
+// l'utente scrive il sorgente senza una riga ".arch" propria (la sceglie dal
+// menu a tendina), quindi retronet-api deve passare ad asmlib un hint che
+// asmlib riconosca. I nomi arch di retronet-api ("4004", "8080", ...) e quelli
+// di asmlib ("i4004", "i8080", ...) sono diversi: un test con ".arch" sempre
+// esplicito nel sorgente non lo scopre, perche' la direttiva del sorgente ha
+// sempre priorita' sull'hint.
+func TestBareAssembleWithoutArchDirective(t *testing.T) {
+	app := New(Config{Version: "test", SessionTTL: time.Minute})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+
+	cases := map[string]string{
+		"4004": "LDM 5\nWMP\nhalt: JUN halt\n",
+		"6502": "start:\nhalt: JMP halt\n.org $FFFC\n.word start\n",
+		"8008": "LAI 0x48\nOUT 8\nHLT\n",
+		"8080": "MVI A, 0x48\nOUT 1\nHLT\n",
+	}
+	for arch, src := range cases {
+		sessionID := createBareSession(t, ts.URL, arch)
+		status, result := assembleSource(t, ts.URL, sessionID, src)
+		if status != http.StatusOK {
+			t.Errorf("%s: assemble status=%d body=%v (deve funzionare anche senza .arch esplicito)", arch, status, result)
+		}
+	}
+}
+
 // TestBareAssembleAndRunNoInput assembla ed esegue un programma 8080 che non
 // legge input (stampa "HI" ed esegue HLT), verificando il ciclo completo
 // assemble -> run -> halt -> sessione di nuovo idle e riusabile.
