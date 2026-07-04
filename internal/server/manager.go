@@ -9,18 +9,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/retronet-labs/retronet-api/internal/backend"
+	"github.com/retronet-labs/retronet-asm/asmlib"
 	"github.com/retronet-labs/retronet-cpm/disk"
 	"github.com/retronet-labs/retronet-cpm/session"
 	"github.com/retronet-labs/retronet-cpm/shell"
+	rt "github.com/retronet-labs/retronet-terminal"
 )
 
 var (
-	ErrSessionNotFound = errors.New("sessione non trovata")
-	ErrSessionLimit    = errors.New("limite sessioni raggiunto")
-	ErrSessionClosed   = errors.New("sessione chiusa")
-	ErrSessionBusy     = errors.New("sessione gia in esecuzione")
-	ErrEmptyCommand    = errors.New("comando vuoto")
-	ErrInvalidUpload   = errors.New("upload non valido")
+	ErrSessionNotFound       = errors.New("sessione non trovata")
+	ErrSessionLimit          = errors.New("limite sessioni raggiunto")
+	ErrSessionClosed         = errors.New("sessione chiusa")
+	ErrSessionBusy           = errors.New("sessione gia in esecuzione")
+	ErrEmptyCommand          = errors.New("comando vuoto")
+	ErrInvalidUpload         = errors.New("upload non valido")
+	ErrUnsupportedForBare    = errors.New("operazione non disponibile per una sessione senza sistema operativo (bare)")
+	ErrUnsupportedForCPM     = errors.New("operazione non disponibile per una sessione CP/M")
+	ErrUnknownKind           = errors.New("kind sessione sconosciuto")
+	ErrArchRequiredForBare   = errors.New("arch obbligatoria per le sessioni bare")
+	ErrUnknownArch           = errors.New("architettura non supportata per sessioni bare")
+	ErrEmptySource           = errors.New("sorgente vuoto")
+	ErrProgramAlreadyRunning = errors.New("programma gia' in esecuzione")
 )
 
 type SessionState string
@@ -30,6 +40,16 @@ const (
 	SessionRunning SessionState = "running"
 	SessionClosed  SessionState = "closed"
 	SessionError   SessionState = "error"
+)
+
+// SessionKind distingue le sessioni CP/M (shell + BDOS, storiche) dalle
+// sessioni "bare": una CPU nuda che carica ed esegue una ROM assemblata al
+// volo, senza sistema operativo.
+type SessionKind string
+
+const (
+	KindCPM  SessionKind = "cpm"
+	KindBare SessionKind = "bare"
 )
 
 type Manager struct {
@@ -47,11 +67,26 @@ type ManagedSession struct {
 	State     SessionState
 	LastError string
 
-	cpm     *session.Session
+	Kind SessionKind
+	Arch string // CPU scelta per le sessioni bare ("4004"|"6502"|"8008"|"8080"); vuoto per cpm
+	// Loaded e' true dopo un /assemble riuscito su una sessione bare: dice se
+	// c'e' un programma pronto per /run.
+	Loaded bool
+
+	cpm     *session.Session // set iff Kind==KindCPM
+	bare    backend.Backend  // set iff Kind==KindBare
 	drive   disk.MutableDrive
 	cleanup func() error
 	line    []byte
 	mu      sync.Mutex
+}
+
+// CreateRequest sceglie il tipo di sessione. Kind vuoto o "cpm" e' il
+// comportamento storico (sessione CP/M su 8080), invariato e retrocompatibile
+// con un body vuoto in POST /sessions.
+type CreateRequest struct {
+	Kind SessionKind `json:"kind"`
+	Arch string      `json:"arch"`
 }
 
 type SessionInfo struct {
@@ -61,6 +96,9 @@ type SessionInfo struct {
 	Closed    bool         `json:"closed"`
 	State     SessionState `json:"state"`
 	LastError string       `json:"last_error,omitempty"`
+	Kind      SessionKind  `json:"kind"`
+	Arch      string       `json:"arch,omitempty"`
+	Loaded    bool         `json:"loaded,omitempty"`
 }
 
 type sessionListResponse struct {
@@ -109,7 +147,18 @@ func NewManager(config Config) *Manager {
 	}
 }
 
-func (m *Manager) Create() (*ManagedSession, error) {
+func (m *Manager) Create(req CreateRequest) (*ManagedSession, error) {
+	switch req.Kind {
+	case "", KindCPM:
+		return m.createCPM()
+	case KindBare:
+		return m.createBare(req.Arch)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrUnknownKind, req.Kind)
+	}
+}
+
+func (m *Manager) createCPM() (*ManagedSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanupExpiredLocked()
@@ -143,9 +192,42 @@ func (m *Manager) Create() (*ManagedSession, error) {
 		CreatedAt: now,
 		ExpiresAt: now.Add(m.config.SessionTTL),
 		State:     SessionIdle,
+		Kind:      KindCPM,
 		cpm:       cpmSession,
 		drive:     drive,
 		cleanup:   cleanup,
+	}
+	m.sessions[id] = sess
+	return sess, nil
+}
+
+func (m *Manager) createBare(arch string) (*ManagedSession, error) {
+	if strings.TrimSpace(arch) == "" {
+		return nil, ErrArchRequiredForBare
+	}
+	be, err := backend.New(arch)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnknownArch, err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupExpiredLocked()
+	if len(m.sessions) >= m.config.MaxSessions {
+		return nil, ErrSessionLimit
+	}
+	id, err := randomID()
+	if err != nil {
+		return nil, err
+	}
+	now := m.now()
+	sess := &ManagedSession{
+		ID:        id,
+		CreatedAt: now,
+		ExpiresAt: now.Add(m.config.SessionTTL),
+		State:     SessionIdle,
+		Kind:      KindBare,
+		Arch:      arch,
+		bare:      be,
 	}
 	m.sessions[id] = sess
 	return sess, nil
@@ -194,6 +276,9 @@ func (m *Manager) ListFiles(id string) (fileListResponse, error) {
 	if err != nil {
 		return fileListResponse{}, err
 	}
+	if sess.Kind == KindBare {
+		return fileListResponse{}, ErrUnsupportedForBare
+	}
 	files, err := sess.drive.List()
 	if err != nil {
 		return fileListResponse{}, err
@@ -210,6 +295,9 @@ func (m *Manager) UploadCOM(id string, name string, data []byte) (uploadResult, 
 	if err != nil {
 		return uploadResult{}, err
 	}
+	if sess.Kind == KindBare {
+		return uploadResult{}, ErrUnsupportedForBare
+	}
 	normalized, err := normalizeCOMName(name)
 	if err != nil {
 		return uploadResult{}, err
@@ -225,6 +313,9 @@ func (m *Manager) RunCommand(id string, command string) (commandResult, error) {
 	if err != nil {
 		return commandResult{}, err
 	}
+	if sess.Kind == KindBare {
+		return commandResult{}, ErrUnsupportedForBare
+	}
 	return sess.runCommand(command)
 }
 
@@ -233,7 +324,56 @@ func (m *Manager) StartCommand(id string, command string) (asyncResult, error) {
 	if err != nil {
 		return asyncResult{}, err
 	}
+	if sess.Kind == KindBare {
+		return sess.startBareRun(m.config.BareStepLimit, m.config.BareRunTimeout)
+	}
 	return sess.startCommand(command)
+}
+
+// assembleResult e' l'esito di Manager.Assemble, tradotto in JSON dal server.
+type assembleResult struct {
+	LoadAddress int `json:"load_address"`
+	Size        int `json:"size"`
+}
+
+// Assemble compila source per l'arch della sessione bare e carica la ROM
+// risultante, pronta per StartCommand. Restituisce asmlib.Errors (verificabile
+// con errors.As) se la compilazione fallisce.
+func (m *Manager) Assemble(id string, src string) (assembleResult, error) {
+	sess, err := m.Get(id)
+	if err != nil {
+		return assembleResult{}, err
+	}
+	if sess.Kind != KindBare {
+		return assembleResult{}, ErrUnsupportedForCPM
+	}
+	if strings.TrimSpace(src) == "" {
+		return assembleResult{}, ErrEmptySource
+	}
+	sess.mu.Lock()
+	if sess.Closed {
+		sess.mu.Unlock()
+		return assembleResult{}, ErrSessionClosed
+	}
+	if sess.State == SessionRunning {
+		sess.mu.Unlock()
+		return assembleResult{}, ErrProgramAlreadyRunning
+	}
+	sess.mu.Unlock()
+
+	result, err := asmlib.Assemble(src, sess.Arch)
+	if err != nil {
+		return assembleResult{}, err
+	}
+	if err := sess.bare.Load(result.ROM, result.LoadAddress); err != nil {
+		return assembleResult{}, err
+	}
+	sess.mu.Lock()
+	sess.Loaded = true
+	sess.State = SessionIdle
+	sess.LastError = ""
+	sess.mu.Unlock()
+	return assembleResult{LoadAddress: result.LoadAddress, Size: len(result.ROM)}, nil
 }
 
 func (m *Manager) SendInput(id string, data string) (commandResult, error) {
@@ -261,14 +401,8 @@ func (m *Manager) SendInitial(id string, send func(any) error) error {
 	if err != nil {
 		return err
 	}
-	out, err := sess.cpm.DrainOutput()
-	if err != nil {
-		return err
-	}
-	snapshot, err := sess.cpm.Snapshot()
-	if err != nil {
-		return err
-	}
+	out := sess.drainOutput()
+	snapshot := sess.snapshotTerminal()
 	if len(out) > 0 {
 		if err := send(socketMessage{Type: "output", Data: string(out)}); err != nil {
 			return err
@@ -288,6 +422,9 @@ func (m *Manager) HandleSocketMessage(id string, msg socketMessage) ([]socketMes
 	}
 	switch msg.Type {
 	case "command":
+		if sess.Kind == KindBare {
+			return nil, ErrUnsupportedForBare
+		}
 		result, err := sess.runCommand(msg.Command)
 		if err != nil {
 			return nil, err
@@ -298,7 +435,13 @@ func (m *Manager) HandleSocketMessage(id string, msg socketMessage) ([]socketMes
 			{Type: "snapshot", Snapshot: result.Snapshot, State: result.State, Closed: result.Closed, Error: result.LastError},
 		}, nil
 	case "run":
-		result, err := sess.startCommand(msg.Command)
+		var result asyncResult
+		var err error
+		if sess.Kind == KindBare {
+			result, err = sess.startBareRun(m.config.BareStepLimit, m.config.BareRunTimeout)
+		} else {
+			result, err = sess.startCommand(msg.Command)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -315,10 +458,7 @@ func (m *Manager) HandleSocketMessage(id string, msg socketMessage) ([]socketMes
 		}
 		return messagesFromResult(result), nil
 	case "snapshot":
-		snap, err := sess.cpm.Snapshot()
-		if err != nil {
-			return nil, err
-		}
+		snap := sess.snapshotTerminal()
 		state, lastError, closed := sess.status()
 		return []socketMessage{{Type: "snapshot", Snapshot: snap, State: state, Closed: closed, Error: lastError}}, nil
 	default:
@@ -353,6 +493,64 @@ func (s *ManagedSession) runCommand(command string) (commandResult, error) {
 
 func (s *ManagedSession) startCommand(command string) (asyncResult, error) {
 	return s.startCommandWithInput(command, nil)
+}
+
+// startBareRun avvia l'esecuzione del programma gia' caricato (via Assemble)
+// su una sessione bare. Non esiste un "comando": si esegue sempre l'intera
+// ROM caricata, dall'inizio.
+func (s *ManagedSession) startBareRun(stepLimit uint64, timeout time.Duration) (asyncResult, error) {
+	if !s.Loaded {
+		return asyncResult{}, backend.ErrNoProgramLoaded
+	}
+	if err := s.beginCommand(); err != nil {
+		return asyncResult{}, err
+	}
+	go s.executeBareRun(stepLimit, timeout)
+	result, err := s.drain()
+	if err != nil {
+		return asyncResult{}, err
+	}
+	return asyncResult{
+		Accepted:  true,
+		Output:    result.Output,
+		Snapshot:  result.Snapshot,
+		Closed:    result.Closed,
+		State:     result.State,
+		LastError: result.LastError,
+	}, nil
+}
+
+// executeBareRun esegue synchronamente Backend.Run e aggiorna lo stato della
+// sessione. A differenza di CP/M, un programma che va in halt torna a
+// SessionIdle (non SessionClosed): l'utente puo' ri-assemblare e rieseguire
+// nella stessa sessione. SessionClosed resta riservato a DELETE /sessions/{id}.
+func (s *ManagedSession) executeBareRun(stepLimit uint64, timeout time.Duration) {
+	result := s.bare.Run(stepLimit, timeout)
+
+	state := SessionIdle
+	lastError := ""
+	switch {
+	case result.Err != nil:
+		state = SessionError
+		lastError = result.Err.Error()
+	case result.TimedOut:
+		state = SessionError
+		lastError = fmt.Sprintf("esecuzione interrotta: superato il timeout di %s", timeout)
+	case result.Halted, result.StepLimit:
+		state = SessionIdle
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Closed {
+		s.State = SessionClosed
+		if lastError != "" {
+			s.LastError = lastError
+		}
+		return
+	}
+	s.State = state
+	s.LastError = lastError
 }
 
 func (s *ManagedSession) startCommandWithInput(command string, initialInput []byte) (asyncResult, error) {
@@ -450,15 +648,29 @@ func (s *ManagedSession) promptOnly() error {
 	return s.cpm.Prompt()
 }
 
+// drainOutput e snapshotTerminal astraggono l'accesso al terminale condiviso,
+// che vive su s.cpm (sessioni CP/M) o su s.bare.Terminal() (sessioni bare) —
+// stesso rt.Snapshot JSON in entrambi i casi, cosi' il resto del manager (e la
+// UI) non deve distinguere i due casi.
+func (s *ManagedSession) drainOutput() []byte {
+	if s.Kind == KindBare {
+		return s.bare.Terminal().DrainOutput()
+	}
+	out, _ := s.cpm.DrainOutput()
+	return out
+}
+
+func (s *ManagedSession) snapshotTerminal() rt.Snapshot {
+	if s.Kind == KindBare {
+		return s.bare.Terminal().Snapshot()
+	}
+	snap, _ := s.cpm.Snapshot()
+	return snap
+}
+
 func (s *ManagedSession) drain() (commandResult, error) {
-	out, err := s.cpm.DrainOutput()
-	if err != nil {
-		return commandResult{}, err
-	}
-	snapshot, err := s.cpm.Snapshot()
-	if err != nil {
-		return commandResult{}, err
-	}
+	out := s.drainOutput()
+	snapshot := s.snapshotTerminal()
 	state, lastError, closed := s.status()
 	return commandResult{
 		Output:    string(out),
@@ -473,6 +685,19 @@ func (s *ManagedSession) handleInput(data string) ([]socketMessage, error) {
 	state, _, closed := s.status()
 	if closed {
 		return nil, ErrSessionClosed
+	}
+	if s.Kind == KindBare {
+		// Nessun editing di riga: una sessione bare non ha una shell davanti
+		// a cui "digitare un comando". I byte vanno sempre diretti al
+		// terminale del programma, in coda finche' non li consuma.
+		if err := s.bare.Input([]byte(data)); err != nil {
+			return nil, err
+		}
+		result, err := s.drain()
+		if err != nil {
+			return nil, err
+		}
+		return messagesFromResult(result), nil
 	}
 	if state == SessionRunning {
 		if err := s.cpm.Input([]byte(data)); err != nil {
@@ -547,6 +772,11 @@ func (s *ManagedSession) close() error {
 	defer s.mu.Unlock()
 	s.Closed = true
 	s.State = SessionClosed
+	if s.Kind == KindBare && s.bare != nil {
+		// Ferma subito un Run in corso invece di aspettare il suo timeout
+		// interno: altrimenti la goroutine resterebbe viva fino ad allora.
+		s.bare.Stop()
+	}
 	if s.cleanup != nil {
 		return s.cleanup()
 	}
@@ -562,6 +792,9 @@ func (s *ManagedSession) info() SessionInfo {
 		Closed:    closed,
 		State:     state,
 		LastError: lastError,
+		Kind:      s.Kind,
+		Arch:      s.Arch,
+		Loaded:    s.Loaded,
 	}
 }
 

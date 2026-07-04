@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/retronet-labs/retronet-api/internal/backend"
 	"github.com/retronet-labs/retronet-api/internal/ws"
+	"github.com/retronet-labs/retronet-asm/asmlib"
 	"github.com/retronet-labs/retronet-cpm/disk"
 )
 
@@ -20,6 +22,13 @@ type Config struct {
 	MaxFileSize    int64
 	MaxFiles       int
 	AllowedOrigins []string
+
+	// BareStepLimit e BareRunTimeout limitano l'esecuzione di una sessione
+	// bare (nessun BDOS a fare da guardia). Il timeout e' la protezione
+	// principale: il limite di step e' un tetto molto piu' alto, pensato per
+	// intercettare un loop di calcolo senza I/O, non l'attesa di tastiera.
+	BareStepLimit  uint64
+	BareRunTimeout time.Duration
 }
 
 type Server struct {
@@ -54,6 +63,12 @@ func normalizeConfig(config Config) Config {
 	}
 	if config.MaxFiles <= 0 {
 		config.MaxFiles = 64
+	}
+	if config.BareStepLimit <= 0 {
+		config.BareStepLimit = 50_000_000
+	}
+	if config.BareRunTimeout <= 0 {
+		config.BareRunTimeout = 30 * time.Second
 	}
 	return config
 }
@@ -103,6 +118,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleUploadFile)
+	s.mux.HandleFunc("POST /sessions/{id}/assemble", s.handleAssemble)
 	s.mux.HandleFunc("POST /sessions/{id}/command", s.handleCommand)
 	s.mux.HandleFunc("POST /sessions/{id}/run", s.handleRun)
 	s.mux.HandleFunc("POST /sessions/{id}/input", s.handleInput)
@@ -128,12 +144,43 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		defer r.Body.Close()
 	}
-	sess, err := s.manager.Create()
+	var req CreateRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("JSON creazione sessione non valido: %w", err))
+			return
+		}
+	}
+	sess, err := s.manager.Create(req)
 	if err != nil {
 		writeError(w, statusForError(err), err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, sessionResponse(sess))
+}
+
+type assembleRequest struct {
+	Source string `json:"source"`
+}
+
+func (s *Server) handleAssemble(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req assembleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("JSON assemble non valido: %w", err))
+		return
+	}
+	result, err := s.manager.Assemble(r.PathValue("id"), req.Source)
+	if err != nil {
+		var compileErrs asmlib.Errors
+		if errors.As(err, &compileErrs) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"errors": compileErrs})
+			return
+		}
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -367,6 +414,9 @@ func sessionResponse(sess *ManagedSession) map[string]any {
 		"closed":     info.Closed,
 		"state":      info.State,
 		"last_error": info.LastError,
+		"kind":       info.Kind,
+		"arch":       info.Arch,
+		"loaded":     info.Loaded,
 	}
 }
 
@@ -380,7 +430,7 @@ func statusForError(err error) int {
 		return http.StatusGone
 	case errors.Is(err, ErrSessionBusy):
 		return http.StatusConflict
-	case errors.Is(err, ErrEmptyCommand):
+	case errors.Is(err, ErrEmptyCommand), errors.Is(err, ErrEmptySource), errors.Is(err, ErrArchRequiredForBare), errors.Is(err, ErrUnknownKind), errors.Is(err, ErrUnknownArch):
 		return http.StatusBadRequest
 	case errors.Is(err, ErrInvalidUpload), errors.Is(err, disk.ErrInvalidName):
 		return http.StatusBadRequest
@@ -390,6 +440,10 @@ func statusForError(err error) int {
 		return http.StatusInsufficientStorage
 	case errors.Is(err, disk.ErrReadOnly):
 		return http.StatusForbidden
+	case errors.Is(err, ErrUnsupportedForBare), errors.Is(err, ErrUnsupportedForCPM):
+		return http.StatusNotFound
+	case errors.Is(err, backend.ErrNoProgramLoaded), errors.Is(err, ErrProgramAlreadyRunning):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}
